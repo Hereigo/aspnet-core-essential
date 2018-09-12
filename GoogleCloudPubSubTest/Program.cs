@@ -1,29 +1,44 @@
 ﻿using Google.Cloud.PubSub.V1;
-using Google.Protobuf;
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace GoogleCloudPubSubTest
 {
 	internal class Program
 	{
+		// Your Google Cloud Platform project ID
+		private const string projectId = "my-pubsub-test-20180911";
+
+		private static readonly string topicName = $"Topic-test-{DateTime.Now.ToString("yyyyMMdd")}";
+		private static readonly string subscriptionId = $"Subs-test-{DateTime.Now.ToString("yyyyMMdd")}";
+
 		private static void Main(string[] args)
 		{
+			Environment.SetEnvironmentVariable("GOOGLE_APPLICATION_CREDENTIALS", @"D:\My_PubSub_Test_20180911-c58600a569b5.json");
+
+			Task.Run(() => Start());
+
+			Console.WriteLine("Service has started...");
+
+			Console.ReadKey();
+		}
+
+		private static void Start()
+		{
+			SubscriberClient _subscriber;
+			PublisherClient _publisher;
 			// Instantiates a client
-			PublisherServiceApiClient publisher = PublisherServiceApiClient.Create();
-
-			// Your Google Cloud Platform project ID
-			string projectId = "my-pubsub-test-20180911";
-
-			string subscriptionId = "my-pubsub-test-20180911-subs";
-
-			// The name for the new topic
-			TopicName topicName = new TopicName(projectId, "New-CSharp-Topic");
+			PublisherServiceApiClient publisherApi = PublisherServiceApiClient.Create();
+			// Subscribe to the topic.
+			TopicName pubsubTopicName = new TopicName(projectId, topicName);
+			SubscriptionName subscriptionName = new SubscriptionName(projectId, subscriptionId);
+			SubscriberServiceApiClient subscriberApi = SubscriberServiceApiClient.Create();
 
 			// Creates the new topic
 			try
 			{
-				Topic topic = publisher.CreateTopic(topicName);
+				Topic topic = publisherApi.CreateTopic(pubsubTopicName);
 				Console.WriteLine($"Topic {topic.Name} created.");
 			}
 			catch (Grpc.Core.RpcException e)
@@ -31,53 +46,65 @@ namespace GoogleCloudPubSubTest
 			{
 				Console.WriteLine($"Topic {topicName} already exists.");
 			}
-			// return 0;
-
+			// Create the new subscription
 			try
 			{
-				// Subscribe to the topic.
-				SubscriberServiceApiClient subscriber = SubscriberServiceApiClient.Create();
-				SubscriptionName subscriptionName = new SubscriptionName(projectId, subscriptionId);
-				subscriber.CreateSubscription(subscriptionName, topicName, pushConfig: null, ackDeadlineSeconds: 60);
-
-				// Publish a message to the topic.
-				PubsubMessage message = new PubsubMessage
-				{
-					// The data is any arbitrary ByteString. Here, we're using text.
-					Data = ByteString.CopyFromUtf8("Hello, Pubsub"),
-					// The attributes provide metadata in a string-to-string dictionary.
-					Attributes = { { "description", "Simple text message" } }
-				};
-				publisher.Publish(topicName, new[] { message });
-
-				// Pull messages from the subscription. We're returning immediately, whether or not there
-				// are messages; in other cases you'll want to allow the call to wait until a message arrives.
-				PullResponse response = subscriber.Pull(subscriptionName, returnImmediately: true, maxMessages: 10);
-				foreach (ReceivedMessage received in response.ReceivedMessages)
-				{
-					PubsubMessage msg = received.Message;
-					Console.WriteLine($"Received message {msg.MessageId} published at {msg.PublishTime.ToDateTime()}");
-					Console.WriteLine($"Text: '{msg.Data.ToStringUtf8()}'");
-				}
-
-				// Acknowledge that we've received the messages. If we don't do this within 60 seconds (as specified
-				// when we created the subscription) we'll receive the messages again when we next pull.
-				subscriber.Acknowledge(subscriptionName, response.ReceivedMessages.Select(m => m.AckId));
-
-				Console.WriteLine("\r\nShould to Delete the Topic ?");
-				Console.ReadKey();
-
-				// Tidy up by deleting the subscription and the topic.
-				subscriber.DeleteSubscription(subscriptionName);
-				publisher.DeleteTopic(topicName);
+				subscriberApi.CreateSubscription(subscriptionName, pubsubTopicName, null, 120);
+				Console.WriteLine($"Subscription {subscriptionName.Kind} created.");
+			}
+			catch (Grpc.Core.RpcException e) when (e.Status.StatusCode == Grpc.Core.StatusCode.AlreadyExists)
+			{
+				// OK
+				Console.WriteLine($"Subscription {subscriptionName.Kind} already exists");
 			}
 			catch (Exception ex)
 			{
-				Console.WriteLine(ex.Message);
+				Console.WriteLine(ex);
 			}
 
-			Console.WriteLine("\r\nDone.");
-			Console.ReadKey();
+			_subscriber = SubscriberClient.Create(subscriptionName, new[] { subscriberApi });
+
+			_publisher = PublisherClient.Create(pubsubTopicName, new[] { publisherApi });
+
+			_publisher.PublishAsync("Bla-Bla-Bla-Message.");
+
+			_subscriber.StartAsync((message, token) =>
+			{
+				string data = message.Data.ToStringUtf8();
+				try
+				{
+					Console.WriteLine($"Pubsub message id={message.MessageId}, " +
+						$"created at {message.PublishTime}, data{message.Data.ToStringUtf8()}");
+
+					// TODO: Replace with ACK
+					return System.Threading.Tasks.Task.FromResult(SubscriberClient.Reply.Nack);
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine(ex.Message);
+					return System.Threading.Tasks.Task.FromResult(SubscriberClient.Reply.Nack);
+				}
+			});
+
+			// VARIAN II :
+
+			// Pull messages from the subscription.We're returning immediately, whether or not there
+			// are messages; in other cases you'll want to allow the call to wait until a message arrives.
+			PullResponse response = subscriberApi.Pull(subscriptionName, returnImmediately: true, maxMessages: 10);
+
+			foreach (ReceivedMessage received in response.ReceivedMessages)
+			{
+				PubsubMessage msg = received.Message;
+				Console.WriteLine($"Received message {msg.MessageId} published at {msg.PublishTime.ToDateTime()}");
+				Console.WriteLine($"Text: '{msg.Data.ToStringUtf8()}'");
+			}
+			// Acknowledge that we've received the messages. If we don't do this within 60 seconds (as specified
+			// when we created the subscription) we'll receive the messages again when we next pull.
+			subscriberApi.Acknowledge(subscriptionName, response.ReceivedMessages.Select(m => m.AckId));
+
+			// Tidy up by deleting the subscription and the topic.
+			subscriberApi.DeleteSubscription(subscriptionName);
+			publisherApi.DeleteTopic(pubsubTopicName);
 		}
 	}
 }
